@@ -34,6 +34,7 @@ const {
   blacklistKeywords,
   isSavingBlacklist,
   saveBlacklistRules,
+  startManualInquiry,
   fileOptions,
   isFileOptionsReady,
 } = useResults()
@@ -105,6 +106,19 @@ async function handleDeleteResults() {
   }
 }
 
+async function handleStartManualInquiry(item: any) {
+  try {
+    await startManualInquiry(item)
+    toast({ title: '已发起主动咨询' })
+  } catch (e) {
+    toast({
+      title: '发起咨询失败',
+      description: (e as Error).message,
+      variant: 'destructive',
+    })
+  }
+}
+
 function parseBlacklistKeywords(input: string) {
   return input
     .split(/[\n,，]+/)
@@ -157,7 +171,12 @@ async function handleSaveBlacklistRules() {
 
     <ResultsInsightsPanel :insights="insights" :selected-task-label="selectedTaskLabel" />
 
-    <ResultsGrid :results="results" :is-loading="isLoading" @toggle-block="toggleItemBlock" />
+    <ResultsGrid
+      :results="results"
+      :is-loading="isLoading"
+      @toggle-block="toggleItemBlock"
+      @start-inquiry="handleStartManualInquiry"
+    />
 
     <Dialog v-model:open="isDeleteDialogOpen">
       <DialogContent class="sm:max-w-[420px]">

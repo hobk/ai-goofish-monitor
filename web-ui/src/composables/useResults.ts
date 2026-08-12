@@ -233,6 +233,19 @@ export function useResults() {
     }
   }
 
+  async function startManualInquiry(item: ResultItem) {
+    if (!selectedFile.value) return
+    const itemId = item.商品信息?.商品ID
+    if (!itemId) return
+    try {
+      await resultsApi.createManualActiveInquiry(selectedFile.value, itemId, true)
+      await fetchResults()
+    } catch (e) {
+      if (e instanceof Error) error.value = e
+      throw e
+    }
+  }
+
   async function saveBlacklistRules(keywords: string[]) {
     if (!selectedFile.value) return
     isSavingBlacklist.value = true
@@ -307,6 +320,7 @@ export function useResults() {
     exportSelectedResults,
     deleteSelectedFile,
     toggleItemBlock,
+    startManualInquiry,
     blacklistKeywords,
     isSavingBlacklist,
     saveBlacklistRules,

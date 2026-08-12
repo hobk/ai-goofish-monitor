@@ -72,3 +72,11 @@ export async function updateItemStatus(filename: string, itemId: string, status:
     body: JSON.stringify({ status }),
   })
 }
+
+export async function createManualActiveInquiry(filename: string, itemId: string, autoStart = true): Promise<{ inquiry_id: number }> {
+  return await http('/api/active-inquiry/inquiries/manual', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename, item_id: itemId, auto_start: autoStart }),
+  })
+}

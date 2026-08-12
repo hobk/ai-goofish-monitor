@@ -42,8 +42,8 @@ def extract_recommendation_score(analysis: dict) -> int:
     return 100 if analysis.get("is_recommended") else 0
 
 
-def should_start_inquiry(record: dict, settings: dict) -> bool:
-    if not settings.get("enabled"):
+def should_start_inquiry(record: dict, settings: dict, *, ignore_enabled: bool = False) -> bool:
+    if not ignore_enabled and not settings.get("enabled"):
         return False
     analysis = record.get("ai_analysis", {}) or {}
     if analysis.get("is_recommended") is False:
@@ -177,9 +177,16 @@ def _insert_message(inquiry_id: int, direction: str, role: str, content: str, ra
         conn.commit()
 
 
-def create_inquiry_from_record(record: dict, keyword: str, *, result_item_id: Optional[int] = None) -> Optional[int]:
+def create_inquiry_from_record(
+    record: dict,
+    keyword: str,
+    *,
+    result_item_id: Optional[int] = None,
+    ignore_enabled: bool = False,
+    auto_start: Optional[bool] = None,
+) -> Optional[int]:
     settings = get_settings()
-    if not should_start_inquiry(record, settings):
+    if not should_start_inquiry(record, settings, ignore_enabled=ignore_enabled):
         return None
     item = record.get("商品信息", {}) or {}
     seller = record.get("卖家信息", {}) or {}
@@ -207,13 +214,47 @@ def create_inquiry_from_record(record: dict, keyword: str, *, result_item_id: Op
             print(f"[主动咨询] 已创建咨询 #{inquiry_id}: {item.get('商品标题', '')[:40]}")
         else:
             print(f"[主动咨询] 咨询已存在，跳过重复启动 #{inquiry_id}: {item.get('商品标题', '')[:40]}")
-        if created and settings.get("auto_send", True):
+        should_auto_start = settings.get("auto_send", True) if auto_start is None else auto_start
+        if created and should_auto_start:
             try:
                 asyncio.get_running_loop()
                 get_runtime().submit_start(inquiry_id)
             except RuntimeError:
                 print(f"[主动咨询] 当前不在异步事件循环中，仅创建记录 #{inquiry_id}，等待前端手动启动")
     return inquiry_id
+
+
+def create_inquiry_from_result_item(
+    filename: str,
+    item_id: str,
+    *,
+    auto_start: bool = True,
+) -> Optional[int]:
+    """Create an active inquiry from a historical result_items row."""
+    ensure_active_inquiry_schema()
+    with sqlite_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, keyword, raw_json
+            FROM result_items
+            WHERE result_filename = ? AND item_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (filename, item_id),
+        ).fetchone()
+    if row is None:
+        raise ValueError("结果商品不存在")
+    record = _json_loads(str(row["raw_json"]), {})
+    if not isinstance(record, dict):
+        raise ValueError("结果商品数据格式无效")
+    return create_inquiry_from_record(
+        record,
+        str(row["keyword"] or record.get("搜索关键字") or ""),
+        result_item_id=int(row["id"]),
+        ignore_enabled=True,
+        auto_start=auto_start,
+    )
 
 
 async def _call_ai_json(record: dict, messages: list[dict], settings: dict, stage: str) -> dict:

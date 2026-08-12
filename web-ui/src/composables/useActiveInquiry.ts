@@ -93,6 +93,14 @@ export function useActiveInquiry() {
     await loadInquiries()
   }
 
+  async function createManualInquiry(filename: string, itemId: string, autoStart = true) {
+    return await http('/api/active-inquiry/inquiries/manual', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, item_id: itemId, auto_start: autoStart }),
+    })
+  }
+
   async function refresh() {
     isLoading.value = true
     error.value = null
@@ -121,6 +129,7 @@ export function useActiveInquiry() {
     loadDetail,
     startInquiry,
     stopInquiry,
+    createManualInquiry,
     refresh,
   }
 }

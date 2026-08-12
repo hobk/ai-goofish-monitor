@@ -14,6 +14,7 @@ from src.services.active_inquiry_service import (
     get_runtime,
     get_inquiry,
     finish_inquiry,
+    create_inquiry_from_result_item,
 )
 
 router = APIRouter(prefix="/api/active-inquiry", tags=["active-inquiry"])
@@ -27,6 +28,12 @@ class ActiveInquirySettingsPayload(BaseModel):
     prompt_file: str = "prompts/active_inquiry_prompt.txt"
     account_state_file: str = ""
     auto_send: bool = True
+
+
+class ManualInquiryRequest(BaseModel):
+    filename: str
+    item_id: str
+    auto_start: bool = True
 
 
 @router.get("/settings")
@@ -51,6 +58,24 @@ async def read_active_inquiry_detail(inquiry_id: int):
     if not inquiry:
         raise HTTPException(status_code=404, detail="主动咨询不存在")
     return {"inquiry": dict(inquiry), "messages": list_messages(inquiry_id)}
+
+
+@router.post("/inquiries/manual")
+async def create_manual_active_inquiry(payload: ManualInquiryRequest):
+    try:
+        inquiry_id = create_inquiry_from_result_item(
+            payload.filename,
+            payload.item_id,
+            auto_start=payload.auto_start,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if inquiry_id is None:
+        raise HTTPException(status_code=400, detail="该商品不满足主动咨询条件或缺少必要信息")
+    inquiry = get_inquiry(inquiry_id)
+    if payload.auto_start and inquiry and inquiry["status"] in {"pending", "failed"}:
+        get_runtime().submit_start(inquiry_id)
+    return {"inquiry_id": inquiry_id, "inquiry": dict(inquiry) if inquiry else None}
 
 
 @router.post("/inquiries/{inquiry_id}/start")

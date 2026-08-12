@@ -10,7 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import Badge from '@/components/ui/badge/Badge.vue'
-import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye } from 'lucide-vue-next'
+import { ExternalLink, TrendingUp, TrendingDown, Info, User, Clock, CheckCircle2, XCircle, AlertCircle, EyeOff, Eye, MessageCircleMore } from 'lucide-vue-next'
 import { formatDateTime } from '@/i18n'
 
 interface Props {
@@ -20,6 +20,7 @@ interface Props {
 const props = defineProps<Props>()
 const emit = defineEmits<{
   (e: 'toggle-block', item: ResultItem): void
+  (e: 'start-inquiry', item: ResultItem): void
 }>()
 const { t } = useI18n()
 
@@ -78,6 +79,15 @@ const expanded = ref(false)
         </Badge>
       </div>
       <div class="absolute top-3 right-3 flex gap-1.5">
+        <button
+          v-if="isRecommended && !isHidden"
+          type="button"
+          @click="emit('start-inquiry', props.item)"
+          aria-label="主动咨询"
+          class="flex rounded-full bg-emerald-500/80 p-1.5 text-white backdrop-blur-md border border-white/40 shadow-sm opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 hover:bg-emerald-600"
+        >
+          <MessageCircleMore class="w-4 h-4" />
+        </button>
         <button
           v-if="canToggleBlock"
           type="button"

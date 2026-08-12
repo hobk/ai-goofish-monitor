@@ -6,7 +6,9 @@ import json
 import random
 import time
 import hashlib
+import struct
 from dataclasses import dataclass
+from http.cookies import SimpleCookie
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import aiohttp
@@ -70,6 +72,21 @@ def generate_device_id(user_id: str) -> str:
 def generate_sign(t: str, token: str, data: str) -> str:
     msg = f"{token}&{t}&{APP_KEY}&{data}"
     return hashlib.md5(msg.encode("utf-8")).hexdigest()
+
+
+def _extract_response_cookies(headers: Any) -> Dict[str, str]:
+    merged: Dict[str, str] = {}
+    getall = getattr(headers, "getall", None)
+    values = getall("Set-Cookie", []) if callable(getall) else []
+    for value in values:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(value)
+        except Exception:
+            continue
+        for key, morsel in cookie.items():
+            merged[key] = morsel.value
+    return merged
 
 
 class MessagePackDecoder:
@@ -415,6 +432,9 @@ class ActiveInquiryImClient:
             "timeout": "20000",
             "api": "mtop.taobao.idlemessage.pc.login.token",
             "sessionOption": "AutoLoginOnly",
+            "spm_cnt": "a21ybx.im.0.0",
+            "spm_pre": "a21ybx.home.sidebar.1.4c053da6vYwnmf",
+            "log_id": "4c053da6vYwnmf",
         }
         headers = {
             "accept": "application/json",
@@ -425,9 +445,24 @@ class ActiveInquiryImClient:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36",
         }
         async with aiohttp.ClientSession() as session:
-            async with session.post(TOKEN_API_URL, params=params, data={"data": data_val}, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                result = await resp.json(content_type=None)
-        return str((result.get("data") or {}).get("accessToken") or "")
+            for attempt in range(2):
+                if attempt:
+                    timestamp = str(int(time.time() * 1000))
+                    token_part = self.cookies.get("_m_h5_tk", "").split("_")[0]
+                    params["t"] = timestamp
+                    params["sign"] = generate_sign(timestamp, token_part, data_val)
+                    headers["cookie"] = self.cookies_str
+                async with session.post(TOKEN_API_URL, params=params, data={"data": data_val}, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    result = await resp.json(content_type=None)
+                    new_cookies = _extract_response_cookies(resp.headers)
+                    if new_cookies:
+                        self.cookies.update(new_cookies)
+                        self.cookies_str = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+                ret_text = str(result.get("ret", []))
+                token = str((result.get("data") or {}).get("accessToken") or "")
+                if token or "令牌过期" not in ret_text:
+                    return token
+        return ""
 
     async def _register(self) -> None:
         reg_mid = generate_mid()
