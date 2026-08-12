@@ -375,6 +375,7 @@ class ActiveInquiryImClient:
         self._recv_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._callbacks: list[Callable[[IncomingMessage], Awaitable[None]]] = []
+        self.last_token_error = ""
 
     @property
     def is_connected(self) -> bool:
@@ -389,7 +390,8 @@ class ActiveInquiryImClient:
             return
         self.token = await self._fetch_token()
         if not self.token:
-            raise RuntimeError("获取闲鱼 IM token 失败")
+            reason = self.last_token_error or "获取闲鱼 IM token 失败"
+            raise RuntimeError(reason)
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(
             WS_URL,
@@ -460,8 +462,18 @@ class ActiveInquiryImClient:
                         self.cookies_str = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
                 ret_text = str(result.get("ret", []))
                 token = str((result.get("data") or {}).get("accessToken") or "")
-                if token or "令牌过期" not in ret_text:
+                if token:
+                    self.last_token_error = ""
                     return token
+                data = result.get("data") if isinstance(result.get("data"), dict) else {}
+                verify_url = str(data.get("url") or "")
+                if "FAIL_SYS_USER_VALIDATE" in ret_text or "punish" in verify_url or "被挤爆" in ret_text:
+                    self.last_token_error = "闲鱼触发风控滑块验证，需要重新登录或人工过验证后再试"
+                    return ""
+                if "令牌过期" not in ret_text:
+                    self.last_token_error = f"获取闲鱼 IM token 失败: {ret_text[:120]}"
+                    return ""
+        self.last_token_error = "获取闲鱼 IM token 失败: 令牌过期重试后仍无 accessToken"
         return ""
 
     async def _register(self) -> None:
