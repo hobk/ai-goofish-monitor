@@ -329,10 +329,18 @@ def _build_context_overrides(snapshot: dict) -> dict:
 def _build_extra_headers(raw_headers: Optional[dict]) -> dict:
     if not raw_headers:
         return {}
-    excluded = {"cookie", "content-length"}
+    # The browser extension captures headers from a specific XHR/fetch request.
+    # Applying those request-scoped headers globally breaks normal navigation and
+    # static asset loading in Chromium (for example, a global
+    # `Sec-Fetch-Mode: cors`/`Sec-Fetch-Dest: empty` makes document/script/style
+    # requests fail with net::ERR_INVALID_ARGUMENT). Keep only stable preference
+    # headers that are safe as Playwright context defaults.
+    allowed = {"user-agent", "accept-language"}
     headers = {}
     for key, value in raw_headers.items():
-        if not key or key.lower() in excluded or value is None:
+        if not key or value is None:
+            continue
+        if key.lower() not in allowed:
             continue
         headers[key] = value
     return headers
@@ -440,6 +448,14 @@ async def scrape_user_profile(context, user_id: str) -> dict:
         print(f"   -> 用户 {user_id} 信息采集完成。")
 
     return profile_data
+
+
+async def _close_browser_after_task(browser, debug_limit: int = 0, headless: bool = RUN_HEADLESS) -> None:
+    log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
+    await asyncio.sleep(5)
+    if debug_limit and not headless:
+        input("按回车键关闭浏览器...")
+    await browser.close()
 
 
 async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
@@ -1167,11 +1183,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 if analysis_dispatcher is not None:
                     log_time("等待后台分析任务完成...")
                     await analysis_dispatcher.join()
-                log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
-                await asyncio.sleep(5)
-                if debug_limit:
-                    input("按回车键关闭浏览器...")
-                await browser.close()
+                await _close_browser_after_task(browser, debug_limit=debug_limit, headless=RUN_HEADLESS)
 
         return processed_item_count
 
