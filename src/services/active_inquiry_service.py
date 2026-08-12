@@ -240,6 +240,26 @@ def _insert_message(inquiry_id: int, direction: str, role: str, content: str, ra
         conn.commit()
 
 
+def split_outbound_messages(text: str) -> list[str]:
+    parts = [line.strip() for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return [part for part in parts if part]
+
+
+def try_claim_inquiry_start(inquiry_id: int) -> bool:
+    ensure_active_inquiry_schema()
+    with sqlite_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE active_inquiries
+            SET status='starting', stage='starting', updated_at=?
+            WHERE id=? AND status IN ('pending', 'failed')
+            """,
+            (_now(), inquiry_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
 def create_inquiry_from_record(
     record: dict,
     keyword: str,
@@ -386,7 +406,14 @@ class ActiveInquiryRuntime:
         if not settings.get("enabled"):
             return
         inquiry = get_inquiry(inquiry_id)
-        if not inquiry or inquiry["status"] not in {"pending", "failed"}:
+        if not inquiry:
+            return
+        if inquiry["status"] not in {"pending", "failed"}:
+            return
+        if not try_claim_inquiry_start(inquiry_id):
+            return
+        inquiry = get_inquiry(inquiry_id)
+        if not inquiry:
             return
         record = _json_loads(inquiry["item_json"], {})
         record["_target_price"] = inquiry["target_price"]
@@ -400,8 +427,10 @@ class ActiveInquiryRuntime:
             message = str(ai.get("message") or "").strip()
             if not message:
                 message = "你好，我对这个商品挺感兴趣，想了解下成色和配件情况。"
-            await client.send_text(chat_id, inquiry["seller_id"], message)
-            _insert_message(inquiry_id, "out", "assistant", message, ai)
+            message_parts = split_outbound_messages(message)
+            for part in message_parts:
+                await client.send_text(chat_id, inquiry["seller_id"], part)
+                _insert_message(inquiry_id, "out", "assistant", part, ai)
         except Exception as exc:
             with sqlite_connection() as conn:
                 conn.execute("UPDATE active_inquiries SET status='failed', stage='error', updated_at=? WHERE id=?", (_now(), inquiry_id))
@@ -435,9 +464,11 @@ class ActiveInquiryRuntime:
         message = str(ai.get("message") or "").strip()
         if not message:
             return
+        message_parts = split_outbound_messages(message)
         client = await self.get_client(settings.get("account_state_file") or "")
-        await client.send_text(inquiry["chat_id"], inquiry["seller_id"], message)
-        _insert_message(inquiry_id, "out", "assistant", message, ai)
+        for part in message_parts:
+            await client.send_text(inquiry["chat_id"], inquiry["seller_id"], part)
+            _insert_message(inquiry_id, "out", "assistant", part, ai)
         with sqlite_connection() as conn:
             conn.execute("UPDATE active_inquiries SET rounds=rounds+1, stage=?, updated_at=? WHERE id=?", (ai.get("stage") or inquiry["stage"], _now(), inquiry_id))
             conn.commit()
