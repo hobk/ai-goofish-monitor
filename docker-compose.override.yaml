@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-goofish-monitor-local:latest
+    pull_policy: never
+    init: false
+    container_name: ai-goofish-monitor-app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      APP_DATABASE_FILE: /app/data/app.sqlite3
+    volumes:
+      - ./.env:/app/.env
+      - ./data:/app/data
+      - ./state:/app/state
+      - ./config.json:/app/config.json
+      - ./prompts:/app/prompts
+      - ./jsonl:/app/jsonl
+      - ./logs:/app/logs
+      - ./images:/app/images
+      - ./price_history:/app/price_history
+    restart: unless-stopped
