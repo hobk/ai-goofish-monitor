@@ -245,6 +245,27 @@ def split_outbound_messages(text: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def is_auto_reply_message(text: str) -> bool:
+    value = re.sub(r"\s+", "", str(text or "")).lower()
+    if not value:
+        return False
+    patterns = (
+        "自动回复",
+        "我现在不在线",
+        "当前不在线",
+        "不在线商品还在",
+        "商品还在可以直接拍",
+        "可以直接拍有问题请留言",
+        "有问题请留言",
+    )
+    return any(pattern.lower() in value for pattern in patterns)
+
+
+def format_exception_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or type(exc).__name__
+
+
 def try_claim_inquiry_start(inquiry_id: int) -> bool:
     ensure_active_inquiry_schema()
     with sqlite_connection() as conn:
@@ -370,6 +391,7 @@ class ActiveInquiryRuntime:
     def __init__(self):
         self._clients: dict[str, ActiveInquiryImClient] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._replying: set[int] = set()
 
     def submit_start(self, inquiry_id: int) -> None:
         task = asyncio.create_task(self.start_inquiry(inquiry_id))
@@ -435,7 +457,7 @@ class ActiveInquiryRuntime:
             with sqlite_connection() as conn:
                 conn.execute("UPDATE active_inquiries SET status='failed', stage='error', updated_at=? WHERE id=?", (_now(), inquiry_id))
                 conn.commit()
-            _insert_message(inquiry_id, "system", "system", f"启动主动咨询失败: {exc}")
+            _insert_message(inquiry_id, "system", "system", f"启动主动咨询失败: {format_exception_message(exc)}")
 
     async def on_message(self, msg: IncomingMessage) -> None:
         if msg.is_self or not msg.cid:
@@ -443,10 +465,25 @@ class ActiveInquiryRuntime:
         inquiry = find_running_by_chat(msg.cid)
         if not inquiry:
             return
+        if is_auto_reply_message(msg.text):
+            _insert_message(inquiry["id"], "system", "system", f"已忽略卖家自动回复: {msg.text}", msg.__dict__)
+            return
         _insert_message(inquiry["id"], "in", "seller", msg.text, msg.__dict__)
-        await self.reply_to_inquiry(int(inquiry["id"]))
+        try:
+            await self.reply_to_inquiry(int(inquiry["id"]))
+        except Exception as exc:
+            _insert_message(inquiry["id"], "system", "system", f"主动咨询回复失败: {format_exception_message(exc)}")
 
     async def reply_to_inquiry(self, inquiry_id: int) -> None:
+        if inquiry_id in self._replying:
+            return
+        self._replying.add(inquiry_id)
+        try:
+            await self._reply_to_inquiry_locked(inquiry_id)
+        finally:
+            self._replying.discard(inquiry_id)
+
+    async def _reply_to_inquiry_locked(self, inquiry_id: int) -> None:
         inquiry = get_inquiry(inquiry_id)
         if not inquiry or inquiry["status"] != "running":
             return
