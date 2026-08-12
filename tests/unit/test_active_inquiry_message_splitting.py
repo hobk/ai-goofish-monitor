@@ -19,6 +19,8 @@ def test_split_outbound_messages_keeps_single_line_message():
 
 def test_auto_reply_messages_are_ignored():
     assert is_auto_reply_message("亲，我现在不在线，商品还在，可以直接拍。有问题请留言") is True
+    assert is_auto_reply_message("亲，我现在不在，喜欢可以拍下，有问题留言哦～会尽快回复") is True
+    assert is_auto_reply_message("（亲，我现在不在线，商品还在，可以直接拍。有问题请留言 ）") is True
     assert is_auto_reply_message("您好 当前自动回复 商品还在") is True
     assert is_auto_reply_message("电池循环大概多少") is False
 

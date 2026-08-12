@@ -246,17 +246,22 @@ def split_outbound_messages(text: str) -> list[str]:
 
 
 def is_auto_reply_message(text: str) -> bool:
-    value = re.sub(r"\s+", "", str(text or "")).lower()
+    value = re.sub(r"[\s，,。.！!？?～~（）()【】\[\]{}、；;：:]+", "", str(text or "")).lower()
     if not value:
         return False
     patterns = (
         "自动回复",
         "我现在不在线",
+        "我现在不在",
         "当前不在线",
         "不在线商品还在",
+        "不在喜欢可以拍下",
+        "喜欢可以拍下有问题留言",
         "商品还在可以直接拍",
         "可以直接拍有问题请留言",
         "有问题请留言",
+        "有问题留言",
+        "会尽快回复",
     )
     return any(pattern.lower() in value for pattern in patterns)
 
