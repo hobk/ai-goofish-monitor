@@ -29,6 +29,7 @@ from src.services.process_service import ProcessService
 from src.services.scheduler_service import SchedulerService
 from src.services.task_log_cleanup_service import cleanup_task_logs
 from src.services.task_generation_service import TaskGenerationService
+from src.services.active_inquiry_service import get_runtime
 from src.infrastructure.persistence.sqlite_bootstrap import bootstrap_sqlite_storage
 from src.infrastructure.persistence.sqlite_task_repository import SqliteTaskRepository
 from src.infrastructure.config.settings import settings as app_settings
@@ -83,6 +84,9 @@ async def lifespan(app: FastAPI):
     # 加载定时任务
     await scheduler_service.reload_jobs(tasks_list)
     scheduler_service.start()
+
+    # 主动咨询需要在应用启动后恢复 IM WebSocket 监听，否则重启后卖家回复不会进入后续 AI 回复链路。
+    await get_runtime().ensure_all_running_connected()
 
     print("应用启动完成")
 

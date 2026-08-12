@@ -10,7 +10,7 @@ from typing import Any, Optional
 from src.infrastructure.persistence.sqlite_bootstrap import bootstrap_sqlite_storage
 from src.infrastructure.persistence.sqlite_connection import sqlite_connection
 from src.infrastructure.external.ai_client import AIClient
-from src.services.active_inquiry_im import ActiveInquiryImClient, cookies_from_storage_state, IncomingMessage
+from src.services.active_inquiry_im import ActiveInquiryImClient, cookies_from_storage_state, IncomingMessage, generate_mid
 from src.ai_handler import send_ntfy_notification
 
 DEFAULT_PROMPT_FILE = "prompts/active_inquiry_prompt.txt"
@@ -403,12 +403,51 @@ class ActiveInquiryRuntime:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    async def ensure_all_running_connected(self) -> None:
+        ensure_active_inquiry_schema()
+        settings = get_settings()
+        if not settings.get("enabled"):
+            return
+        with sqlite_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM active_inquiries WHERE status='running'").fetchone()
+        if int(row["c"] if row else 0) <= 0:
+            return
+        try:
+            await self.get_client(settings.get("account_state_file") or "")
+        except Exception as exc:
+            print(f"[主动咨询] 启动消息监听失败: {format_exception_message(exc)}")
+
+    async def _sync_status(self, client: ActiveInquiryImClient) -> None:
+        try:
+            current_time = int(datetime.now().timestamp() * 1000)
+            await client._send_raw({
+                "lwp": "/r/SyncStatus/ackDiff",
+                "headers": {"mid": generate_mid()},
+                "body": [{
+                    "pipeline": "sync",
+                    "tooLong2Tag": "PNM,1",
+                    "channel": "sync",
+                    "topic": "sync",
+                    "highPts": 0,
+                    "pts": current_time * 1000,
+                    "seq": 0,
+                    "timestamp": current_time,
+                }],
+            })
+        except Exception as exc:
+            print(f"[主动咨询] 同步消息状态失败: {format_exception_message(exc)}")
+
     async def get_client(self, account_state_file: str) -> ActiveInquiryImClient:
         state_path = account_state_file or _pick_first_state_file()
         if not state_path:
             raise RuntimeError("未配置主动咨询账号状态文件，且 state/ 下没有可用账号")
         if state_path in self._clients and self._clients[state_path].is_connected:
-            return self._clients[state_path]
+            client = self._clients[state_path]
+            await self._sync_status(client)
+            return client
+        stale_client = self._clients.pop(state_path, None)
+        if stale_client:
+            await stale_client.close()
         snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
         cookies_str = cookies_from_storage_state(snapshot)
         settings = get_settings()
@@ -426,6 +465,7 @@ class ActiveInquiryRuntime:
         client.add_message_callback(self.on_message)
         await client.connect()
         self._clients[state_path] = client
+        await self._sync_status(client)
         return client
 
     async def start_inquiry(self, inquiry_id: int) -> None:

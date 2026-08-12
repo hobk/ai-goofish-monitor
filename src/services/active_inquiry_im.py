@@ -381,7 +381,8 @@ class ActiveInquiryImClient:
 
     @property
     def is_connected(self) -> bool:
-        return bool(self._ws and not self._ws.closed and self._session and not self._session.closed)
+        recv_alive = bool(self._recv_task and not self._recv_task.done())
+        return bool(self._ws and not self._ws.closed and self._session and not self._session.closed and recv_alive)
 
     def add_message_callback(self, callback: Callable[[IncomingMessage], Awaitable[None]]) -> None:
         if callback not in self._callbacks:
@@ -418,6 +419,9 @@ class ActiveInquiryImClient:
             await self._ws.close()
         if self._session and not self._session.closed:
             await self._session.close()
+
+    async def force_close(self) -> None:
+        await self.close()
 
     async def _solve_captcha(self, verify_url: str) -> bool:
         cfg = self.captcha_solver or {}
@@ -644,16 +648,17 @@ class ActiveInquiryImClient:
             if not fut.done():
                 fut.set_result(message)
             return
-        incoming = self._parse_push(message)
-        if incoming:
+        incoming_messages = self._parse_pushes(message)
+        for incoming in incoming_messages:
             for cb in list(self._callbacks):
                 await cb(incoming)
 
-    def _parse_push(self, message: dict) -> Optional[IncomingMessage]:
+    def _parse_pushes(self, message: dict) -> list[IncomingMessage]:
         body = message.get("body", {})
         sync_pkg = body.get("syncPushPackage") if isinstance(body, dict) else None
         if not sync_pkg:
-            return None
+            return []
+        parsed_messages: list[IncomingMessage] = []
         data_list = sync_pkg.get("data") or []
         for sync_data in data_list:
             raw = sync_data.get("data") if isinstance(sync_data, dict) else None
@@ -662,8 +667,12 @@ class ActiveInquiryImClient:
                 continue
             parsed = self._parse_decoded_message(decoded)
             if parsed:
-                return parsed
-        return None
+                parsed_messages.append(parsed)
+        return parsed_messages
+
+    def _parse_push(self, message: dict) -> Optional[IncomingMessage]:
+        messages = self._parse_pushes(message)
+        return messages[0] if messages else None
 
     def _decode_push_data(self, data: str | None) -> Optional[dict]:
         if not data:
