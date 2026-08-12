@@ -10,6 +10,7 @@ import struct
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import Any, Awaitable, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -360,7 +361,7 @@ class IncomingMessage:
 class ActiveInquiryImClient:
     """Minimal Goofish IM client for buyer-side active inquiries."""
 
-    def __init__(self, account_id: str, cookies_str: str):
+    def __init__(self, account_id: str, cookies_str: str, captcha_solver: Optional[dict] = None):
         self.account_id = account_id
         self.cookies_str = cookies_str
         self.cookies = trans_cookies(cookies_str)
@@ -368,6 +369,7 @@ class ActiveInquiryImClient:
         if not self.myid:
             raise ValueError("Cookie 缺少 unb/munb，无法连接闲鱼 IM")
         self.device_id = generate_device_id(self.myid)
+        self.captcha_solver = captcha_solver or {}
         self.token = ""
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -417,6 +419,49 @@ class ActiveInquiryImClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
+    async def _solve_captcha(self, verify_url: str) -> bool:
+        cfg = self.captcha_solver or {}
+        if not (cfg.get("enabled") and cfg.get("endpoint") and cfg.get("api_key")):
+            self.last_token_error = "闲鱼触发风控滑块验证，但未配置外部滑块解决服务"
+            return False
+        parsed = urlparse(verify_url)
+        host = (parsed.hostname or "").lower()
+        if not host or (host != "goofish.com" and not host.endswith(".goofish.com")):
+            self.last_token_error = "闲鱼滑块验证链接主机异常，已拒绝调用外部服务"
+            return False
+        payload = {
+            "secret_key": str(cfg.get("api_key") or ""),
+            "account_id": self.account_id,
+            "url": verify_url,
+            "browser_timeout": int(cfg.get("timeout") or 60),
+        }
+        if cfg.get("pass_cookies", True):
+            payload["cookies"] = self.cookies_str
+            payload["device_id"] = self.device_id
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    str(cfg["endpoint"]),
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=max(30, int(cfg.get("timeout") or 60) + 20)),
+                ) as resp:
+                    result = await resp.json(content_type=None)
+        except Exception as exc:
+            self.last_token_error = f"外部滑块服务调用失败: {type(exc).__name__}"
+            return False
+        if not (isinstance(result, dict) and result.get("success")):
+            message = str(result.get("message") or "过滑块失败") if isinstance(result, dict) else "过滑块失败"
+            self.last_token_error = f"外部滑块服务未通过: {message[:120]}"
+            return False
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        cookies = data.get("cookies") if isinstance(data.get("cookies"), dict) else {}
+        if not cookies:
+            self.last_token_error = "外部滑块服务成功但未返回 cookies"
+            return False
+        self.cookies.update({str(k): str(v) for k, v in cookies.items() if str(k)})
+        self.cookies_str = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+        return True
+
     async def _fetch_token(self) -> str:
         timestamp = str(int(time.time() * 1000))
         data_val = json.dumps({"appKey": IM_APP_KEY, "deviceId": self.device_id}, separators=(",", ":"))
@@ -447,7 +492,7 @@ class ActiveInquiryImClient:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/146.0.0.0 Safari/537.36",
         }
         async with aiohttp.ClientSession() as session:
-            for attempt in range(2):
+            for attempt in range(4):
                 if attempt:
                     timestamp = str(int(time.time() * 1000))
                     token_part = self.cookies.get("_m_h5_tk", "").split("_")[0]
@@ -468,8 +513,11 @@ class ActiveInquiryImClient:
                 data = result.get("data") if isinstance(result.get("data"), dict) else {}
                 verify_url = str(data.get("url") or "")
                 if "FAIL_SYS_USER_VALIDATE" in ret_text or "punish" in verify_url or "被挤爆" in ret_text:
-                    self.last_token_error = "闲鱼触发风控滑块验证，需要重新登录或人工过验证后再试"
-                    return ""
+                    if attempt >= 2 or not await self._solve_captcha(verify_url):
+                        if not self.last_token_error:
+                            self.last_token_error = "闲鱼触发风控滑块验证，外部滑块服务未能解除风控"
+                        return ""
+                    continue
                 if "令牌过期" not in ret_text:
                     self.last_token_error = f"获取闲鱼 IM token 失败: {ret_text[:120]}"
                     return ""

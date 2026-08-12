@@ -22,6 +22,11 @@ DEFAULT_SETTINGS = {
     "prompt_file": DEFAULT_PROMPT_FILE,
     "account_state_file": "",
     "auto_send": True,
+    "captcha_solver_enabled": False,
+    "captcha_solver_endpoint": "",
+    "captcha_solver_api_key": "",
+    "captcha_solver_pass_cookies": True,
+    "captcha_solver_timeout": 60,
 }
 
 _RUNTIME: Optional["ActiveInquiryRuntime"] = None
@@ -70,6 +75,40 @@ def _json_loads(text: str, default):
         return default
 
 
+SECRET_MASK = "********"
+
+
+def mask_secret_value(value: str | None) -> str:
+    return SECRET_MASK if str(value or "").strip() else ""
+
+
+def public_settings(settings: dict) -> dict:
+    visible = dict(settings)
+    visible["captcha_solver_api_key"] = mask_secret_value(visible.get("captcha_solver_api_key"))
+    return visible
+
+
+def merge_settings_payload(payload: dict, existing: dict | None = None) -> dict:
+    settings = {**DEFAULT_SETTINGS, **(existing or {}), **payload}
+    if str(payload.get("captcha_solver_api_key") or "") == SECRET_MASK:
+        settings["captcha_solver_api_key"] = (existing or {}).get("captcha_solver_api_key", "")
+    return settings
+
+
+def _migrate_settings_columns(conn) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(active_inquiry_settings)").fetchall()}
+    additions = {
+        "captcha_solver_enabled": "INTEGER NOT NULL DEFAULT 0",
+        "captcha_solver_endpoint": "TEXT NOT NULL DEFAULT ''",
+        "captcha_solver_api_key": "TEXT NOT NULL DEFAULT ''",
+        "captcha_solver_pass_cookies": "INTEGER NOT NULL DEFAULT 1",
+        "captcha_solver_timeout": "INTEGER NOT NULL DEFAULT 60",
+    }
+    for name, ddl in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE active_inquiry_settings ADD COLUMN {name} {ddl}")
+
+
 def ensure_active_inquiry_schema() -> None:
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
@@ -86,6 +125,7 @@ def ensure_active_inquiry_schema() -> None:
             updated_at TEXT NOT NULL
         )
         """)
+        _migrate_settings_columns(conn)
         conn.execute("""
         CREATE TABLE IF NOT EXISTS active_inquiries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,24 +181,47 @@ def get_settings() -> dict:
         "prompt_file": row["prompt_file"],
         "account_state_file": row["account_state_file"] or "",
         "auto_send": bool(row["auto_send"]),
+        "captcha_solver_enabled": bool(row["captcha_solver_enabled"]),
+        "captcha_solver_endpoint": row["captcha_solver_endpoint"] or "",
+        "captcha_solver_api_key": row["captcha_solver_api_key"] or "",
+        "captcha_solver_pass_cookies": bool(row["captcha_solver_pass_cookies"]),
+        "captcha_solver_timeout": int(row["captcha_solver_timeout"] or 60),
     }
 
 
 def save_settings(payload: dict) -> dict:
     ensure_active_inquiry_schema()
-    settings = {**DEFAULT_SETTINGS, **payload}
+    existing = get_settings()
+    settings = merge_settings_payload(payload, existing)
     settings["threshold"] = max(0, min(100, int(settings.get("threshold") or 70)))
     settings["max_rounds"] = max(1, min(30, int(settings.get("max_rounds") or 6)))
     settings["bargain_percent"] = max(0, min(80, float(settings.get("bargain_percent") or 10)))
+    settings["captcha_solver_timeout"] = max(20, min(120, int(settings.get("captcha_solver_timeout") or 60)))
     now = _now()
     with sqlite_connection() as conn:
         conn.execute("""
         INSERT OR REPLACE INTO active_inquiry_settings
-        (id, enabled, threshold, max_rounds, bargain_percent, prompt_file, account_state_file, auto_send, updated_at)
-        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (1 if settings["enabled"] else 0, settings["threshold"], settings["max_rounds"], settings["bargain_percent"], settings["prompt_file"], settings.get("account_state_file") or "", 1 if settings.get("auto_send", True) else 0, now))
+        (id, enabled, threshold, max_rounds, bargain_percent, prompt_file, account_state_file, auto_send,
+         captcha_solver_enabled, captcha_solver_endpoint, captcha_solver_api_key, captcha_solver_pass_cookies,
+         captcha_solver_timeout, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            1 if settings["enabled"] else 0,
+            settings["threshold"],
+            settings["max_rounds"],
+            settings["bargain_percent"],
+            settings["prompt_file"],
+            settings.get("account_state_file") or "",
+            1 if settings.get("auto_send", True) else 0,
+            1 if settings.get("captcha_solver_enabled") else 0,
+            settings.get("captcha_solver_endpoint") or "",
+            settings.get("captcha_solver_api_key") or "",
+            1 if settings.get("captcha_solver_pass_cookies", True) else 0,
+            settings["captcha_solver_timeout"],
+            now,
+        ))
         conn.commit()
-    return get_settings()
+    return public_settings(get_settings())
 
 
 def _extract_seller_id(record: dict) -> str:
@@ -301,7 +364,18 @@ class ActiveInquiryRuntime:
             return self._clients[state_path]
         snapshot = json.loads(Path(state_path).read_text(encoding="utf-8"))
         cookies_str = cookies_from_storage_state(snapshot)
-        client = ActiveInquiryImClient(Path(state_path).stem, cookies_str)
+        settings = get_settings()
+        client = ActiveInquiryImClient(
+            Path(state_path).stem,
+            cookies_str,
+            captcha_solver={
+                "enabled": bool(settings.get("captcha_solver_enabled")),
+                "endpoint": settings.get("captcha_solver_endpoint") or "",
+                "api_key": settings.get("captcha_solver_api_key") or "",
+                "pass_cookies": bool(settings.get("captcha_solver_pass_cookies", True)),
+                "timeout": int(settings.get("captcha_solver_timeout") or 60),
+            },
+        )
         client.add_message_callback(self.on_message)
         await client.connect()
         self._clients[state_path] = client

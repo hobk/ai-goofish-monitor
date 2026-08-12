@@ -103,6 +103,24 @@ onMounted(handleRefresh)
         <label class="flex items-center gap-2 rounded-lg border p-3 text-sm font-medium">
           <input v-model="settingsDraft.auto_send" type="checkbox" class="h-4 w-4" />AI 生成后自动发送
         </label>
+        <label class="flex items-center gap-2 rounded-lg border p-3 text-sm font-medium">
+          <input v-model="settingsDraft.captcha_solver_enabled" type="checkbox" class="h-4 w-4" />启用外部滑块服务
+        </label>
+        <label class="space-y-1 text-sm md:col-span-2">
+          <span class="font-medium">滑块服务接口</span>
+          <Input v-model="settingsDraft.captcha_solver_endpoint" placeholder="https://xy-auto.yfw.me/api/v1/captcha/slider-solve" />
+        </label>
+        <label class="space-y-1 text-sm">
+          <span class="font-medium">滑块服务密钥</span>
+          <Input v-model="settingsDraft.captcha_solver_api_key" type="password" autocomplete="new-password" placeholder="已保存时显示 ********" />
+        </label>
+        <label class="space-y-1 text-sm">
+          <span class="font-medium">滑块超时(秒)</span>
+          <Input v-model="settingsDraft.captcha_solver_timeout" type="number" min="20" max="120" />
+        </label>
+        <label class="flex items-center gap-2 rounded-lg border p-3 text-sm font-medium md:col-span-2">
+          <input v-model="settingsDraft.captcha_solver_pass_cookies" type="checkbox" class="h-4 w-4" />调用滑块服务时传递当前账号 Cookie 与 device_id
+        </label>
         <div class="md:col-span-3 flex justify-end">
           <Button @click="handleSaveSettings"><Save class="h-4 w-4" />保存配置</Button>
         </div>

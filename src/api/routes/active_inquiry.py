@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from src.services.active_inquiry_service import (
     ensure_active_inquiry_schema,
     get_settings,
+    public_settings,
     save_settings,
     list_inquiries,
     list_messages,
@@ -28,6 +29,11 @@ class ActiveInquirySettingsPayload(BaseModel):
     prompt_file: str = "prompts/active_inquiry_prompt.txt"
     account_state_file: str = ""
     auto_send: bool = True
+    captcha_solver_enabled: bool = False
+    captcha_solver_endpoint: str = ""
+    captcha_solver_api_key: str = ""
+    captcha_solver_pass_cookies: bool = True
+    captcha_solver_timeout: int = Field(60, ge=20, le=120)
 
 
 class ManualInquiryRequest(BaseModel):
@@ -39,7 +45,7 @@ class ManualInquiryRequest(BaseModel):
 @router.get("/settings")
 async def read_active_inquiry_settings():
     ensure_active_inquiry_schema()
-    return get_settings()
+    return public_settings(get_settings())
 
 
 @router.put("/settings")

@@ -9,6 +9,11 @@ export interface ActiveInquirySettings {
   prompt_file: string
   account_state_file: string
   auto_send: boolean
+  captcha_solver_enabled: boolean
+  captcha_solver_endpoint: string
+  captcha_solver_api_key: string
+  captcha_solver_pass_cookies: boolean
+  captcha_solver_timeout: number
 }
 
 export interface ActiveInquiry {
@@ -48,6 +53,11 @@ const defaultSettings: ActiveInquirySettings = {
   prompt_file: 'prompts/active_inquiry_prompt.txt',
   account_state_file: '',
   auto_send: true,
+  captcha_solver_enabled: false,
+  captcha_solver_endpoint: '',
+  captcha_solver_api_key: '',
+  captcha_solver_pass_cookies: true,
+  captcha_solver_timeout: 60,
 }
 
 export function useActiveInquiry() {
