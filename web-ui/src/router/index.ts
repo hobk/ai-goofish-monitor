@@ -41,6 +41,12 @@ const routes = [
         meta: { titleKey: 'routes.results', requiresAuth: true },
       },
       {
+        path: 'active-inquiry',
+        name: 'ActiveInquiry',
+        component: () => import('@/views/ActiveInquiryView.vue'),
+        meta: { titleKey: 'routes.activeInquiry', requiresAuth: true },
+      },
+      {
         path: 'logs',
         name: 'Logs',
         component: () => import('@/views/LogsView.vue'),

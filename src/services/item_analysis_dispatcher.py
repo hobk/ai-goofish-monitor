@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from src.keyword_rule_engine import build_search_text, evaluate_keyword_rules
+from src.services.active_inquiry_service import create_inquiry_from_record
 
 
 SellerLoader = Callable[[str], Awaitable[dict]]
@@ -74,8 +75,13 @@ class ItemAnalysisDispatcher:
         item_data = record.get("商品信息", {}) or {}
         record["卖家信息"] = await self._load_seller_info(job)
         record["ai_analysis"] = await self._build_analysis_result(job, record)
-        if await self._saver(record, job.keyword):
+        saved = await self._saver(record, job.keyword)
+        if saved:
             self.completed_count += 1
+            try:
+                create_inquiry_from_record(record, job.keyword)
+            except Exception as exc:
+                print(f"   [主动咨询] 创建咨询失败: {exc}")
         await self._notify_if_recommended(item_data, record["ai_analysis"])
 
     async def _load_seller_info(self, job: ItemAnalysisJob) -> dict:
@@ -88,6 +94,8 @@ class ItemAnalysisDispatcher:
         merged = copy.deepcopy(seller_info or {})
         merged["卖家芝麻信用"] = job.zhima_credit_text
         merged["卖家注册时长"] = job.registration_duration_text
+        if job.seller_id:
+            merged["卖家ID"] = str(job.seller_id)
         return merged
 
     async def _build_analysis_result(self, job: ItemAnalysisJob, record: dict) -> dict:
