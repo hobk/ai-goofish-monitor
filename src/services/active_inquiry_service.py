@@ -271,6 +271,49 @@ def format_exception_message(exc: Exception) -> str:
     return message or type(exc).__name__
 
 
+def is_low_value_ai_message(text: str) -> bool:
+    value = re.sub(r"[\s，,。.！!？?～~（）()【】\[\]{}、；;：:]+", "", str(text or "")).lower()
+    if not value:
+        return True
+    ack_words = ("好的", "可以", "嗯嗯", "了解", "明白", "收到", "行")
+    has_next_action = any(k in value for k in ("吗", "么", "能", "方便", "可以", "最低", "多少", "走验货宝", "无炸", "进水", "维修", "拆修", "解绑", "自检", "实拍", "包邮", "自提"))
+    ack_only = any(value.startswith(k) for k in ack_words) and len(value) <= 12
+    only_assessment = any(k in value for k in ("循环挺低", "成色挺好", "没问题")) and not has_next_action
+    return ack_only or only_assessment
+
+
+def _last_inbound_text(messages: list[dict]) -> str:
+    for msg in reversed(messages):
+        if msg.get("direction") == "in":
+            return str(msg.get("content") or "")
+    return ""
+
+
+def _asked_text(messages: list[dict]) -> str:
+    return "\n".join(str(m.get("content") or "") for m in messages if m.get("direction") == "out")
+
+
+def build_fallback_message(record: dict, messages: list[dict], settings: dict, stage: str) -> str:
+    inbound = _last_inbound_text(messages)
+    asked = _asked_text(messages)
+    compact_in = re.sub(r"\s+", "", inbound)
+    if re.search(r"循环|\d+[,，、]\d+|飞了?不到|飞.*次", compact_in):
+        if not re.search(r"炸机|进水|维修|拆修", asked):
+            return "循环挺低的\n那无炸机进水维修吧"
+        if not re.search(r"自检|功能|云台|避障", asked):
+            return "循环挺低的\n功能自检都正常吧"
+        return "循环挺低的\n价格还能优惠点吗"
+    if re.search(r"无问题|没问题|几乎全新|正常", compact_in):
+        if not re.search(r"循环|电池", asked):
+            return "好的\n电池循环多少呢"
+        if not re.search(r"验货宝|自提|发货", asked):
+            return "好的\n支持验货宝吗"
+        return "好的\n价格还能优惠点吗"
+    if stage == "initial" or not messages:
+        return "你好 对这个挺感兴趣\n请问有无炸机进水维修\n电池循环方便看下吗"
+    return "好的\n那价格还能优惠点吗"
+
+
 def try_claim_inquiry_start(inquiry_id: int) -> bool:
     ensure_active_inquiry_schema()
     with sqlite_connection() as conn:
@@ -387,7 +430,21 @@ async def _call_ai_json(record: dict, messages: list[dict], settings: dict, stag
         data = _json_loads(text, {})
         if not isinstance(data, dict):
             data = {}
+        message = str(data.get("message") or "").strip()
+        if is_low_value_ai_message(message):
+            data["message"] = build_fallback_message(record, messages, settings, stage)
+            data["fallback_reason"] = "AI 回复缺少后续动作"
         return data
+    except Exception as exc:
+        reason = format_exception_message(exc)
+        print(f"[主动咨询] AI生成失败，使用兜底回复: {reason}")
+        return {
+            "message": build_fallback_message(record, messages, settings, stage),
+            "stage": stage,
+            "stop": False,
+            "admin_summary": "",
+            "fallback_reason": reason,
+        }
     finally:
         await client.close()
 
@@ -414,8 +471,27 @@ class ActiveInquiryRuntime:
             return
         try:
             await self.get_client(settings.get("account_state_file") or "")
+            await self.retry_unanswered_inquiries()
         except Exception as exc:
             print(f"[主动咨询] 启动消息监听失败: {format_exception_message(exc)}")
+
+    async def retry_unanswered_inquiries(self) -> None:
+        for inquiry in list_inquiries("running"):
+            messages = list_messages(int(inquiry["id"]))
+            last_in = None
+            last_out_id = 0
+            for msg in messages:
+                if msg.get("direction") == "out":
+                    last_out_id = int(msg.get("id") or 0)
+                elif msg.get("direction") == "in":
+                    last_in = msg
+            if not last_in or int(last_in.get("id") or 0) <= last_out_id:
+                continue
+            if is_auto_reply_message(str(last_in.get("content") or "")):
+                _insert_message(int(inquiry["id"]), "system", "system", f"已忽略历史卖家自动回复: {last_in.get('content')}")
+                continue
+            print(f"[主动咨询] 检测到未回复卖家消息，自动补发后续: inquiry_id={inquiry['id']}")
+            await self.reply_to_inquiry(int(inquiry["id"]))
 
     async def _sync_status(self, client: ActiveInquiryImClient) -> None:
         try:

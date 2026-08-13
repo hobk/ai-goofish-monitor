@@ -604,7 +604,7 @@ class ActiveInquiryImClient:
             raise RuntimeError("WebSocket未连接")
         await self._ws.send_json(msg)
 
-    async def _send_and_wait(self, mid: str, msg: dict, timeout: float = 20) -> dict:
+    async def _send_and_wait(self, mid: str, msg: dict, timeout: float = 45) -> dict:
         if not self._ws or self._ws.closed:
             raise RuntimeError("WebSocket未连接")
         loop = asyncio.get_running_loop()
